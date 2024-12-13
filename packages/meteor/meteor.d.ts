@@ -1,6 +1,5 @@
 import { Mongo } from 'meteor/mongo';
 import { EJSONable, EJSONableProperty } from 'meteor/ejson';
-import { Blaze } from 'meteor/blaze';
 import { DDP } from 'meteor/ddp';
 
 export type global_Error = Error;
@@ -20,6 +19,15 @@ export namespace Meteor {
    * of Meteor.
    */
   var release: string;
+
+  var meteorRelease: string;
+  
+  interface ErrorConstructor {
+    new (...args: any[]): Error;
+    errorType: string;
+  }
+
+  function makeErrorType(name: string, constructor: Function): ErrorConstructor;
   /** Global props **/
 
   /** Settings **/
@@ -61,6 +69,9 @@ export namespace Meteor {
   function user(options?: {
     fields?: Mongo.FieldSpecifier | undefined;
   }): User | null;
+  function userAsync(options?: {
+    fields?: Mongo.FieldSpecifier | undefined;
+  }): Promise<Meteor.User | null>;
 
   function userId(): string | null;
   var users: Mongo.Collection<User>;
@@ -147,12 +158,60 @@ export namespace Meteor {
   }): void;
 
   /**
-   * Invokes a method passing any number of arguments.
+   * Invokes a method with a sync stub, passing any number of arguments.
    * @param name Name of method to invoke
    * @param args Optional method arguments
    */
   function call(name: string, ...args: any[]): any;
 
+  /**
+   * Invokes a method with an async stub, passing any number of arguments.
+   * @param name Name of method to invoke
+   * @param args Optional method arguments
+   */
+  function callAsync(name: string, ...args: any[]): Promise<any>;
+
+  interface MethodApplyOptions<
+    Result extends
+      | EJSONable
+      | EJSONable[]
+      | EJSONableProperty
+      | EJSONableProperty[]
+  > {
+    /**
+     * (Client only) If true, don't send this method until all previous method calls have completed, and don't send any subsequent method calls until this one is completed.
+     */
+    wait?: boolean | undefined;
+    /**
+     * (Client only) This callback is invoked with the error or result of the method (just like `asyncCallback`) as soon as the error or result is available. The local cache may not yet reflect the writes performed by the method.
+     */
+    onResultReceived?:
+      | ((
+          error: global_Error | Meteor.Error | undefined,
+          result?: Result
+        ) => void)
+      | undefined;
+    /**
+     * (Client only) if true, don't send this method again on reload, simply call the callback an error with the error code 'invocation-failed'.
+     */
+    noRetry?: boolean | undefined;
+    /**
+     * (Client only) If true then in cases where we would have otherwise discarded the stub's return value and returned undefined, instead we go ahead and return it. Specifically, this is any time other than when (a) we are already inside a stub or (b) we are in Node and no callback was provided. Currently we require this flag to be explicitly passed to reduce the likelihood that stub return values will be confused with server return values; we may improve this in future.
+     */
+    returnStubValue?: boolean | undefined;
+    /**
+     * (Client only) If true, exceptions thrown by method stubs will be thrown instead of logged, and the method will not be invoked on the server.
+     */
+    throwStubExceptions?: boolean | undefined;
+  }
+
+  /**
+   * Invokes a method with a sync stub, passing any number of arguments.
+   * @param name Name of method to invoke
+   * @param args Method arguments
+   * @param options Optional execution options
+   * @param asyncCallback Optional callback
+   */
   function apply<
     Result extends
       | EJSONable
@@ -162,26 +221,35 @@ export namespace Meteor {
   >(
     name: string,
     args: ReadonlyArray<EJSONable | EJSONableProperty>,
-    options?: {
-      wait?: boolean | undefined;
-      onResultReceived?:
-        | ((
-            error: global_Error | Meteor.Error | undefined,
-            result?: Result
-          ) => void)
-        | undefined;
-      /**
-       * (Client only) if true, don't send this method again on reload, simply call the callback an error with the error code 'invocation-failed'.
-       */
-      noRetry?: boolean | undefined;
-      returnStubValue?: boolean | undefined;
-      throwStubExceptions?: boolean | undefined;
-    },
+    options?: MethodApplyOptions<Result>,
     asyncCallback?: (
       error: global_Error | Meteor.Error | undefined,
       result?: Result
     ) => void
   ): any;
+
+  /**
+   * Invokes a method with an async stub, passing any number of arguments.
+   * @param name Name of method to invoke
+   * @param args Method arguments
+   * @param options Optional execution options
+   * @param asyncCallback Optional callback
+   */
+  function applyAsync<
+    Result extends
+      | EJSONable
+      | EJSONable[]
+      | EJSONableProperty
+      | EJSONableProperty[]
+  >(
+    name: string,
+    args: ReadonlyArray<EJSONable | EJSONableProperty>,
+    options?: MethodApplyOptions<Result>,
+    asyncCallback?: (
+      error: global_Error | Meteor.Error | undefined,
+      result?: Result
+    ) => void
+  ): Promise<Result>;
   /** Method **/
 
   /** Url **/
@@ -256,7 +324,7 @@ export namespace Meteor {
    * @param func A function that takes a callback as its final parameter
    * @param context Optional `this` object against which the original function will be invoked
    */
-  function wrapAsync(func: Function, context?: Object): any;
+  function wrapAsync<T extends Function>(func: T, context?: ThisParameterType<T>): Function;
 
   function bindEnvironment<TFunc extends Function>(func: TFunc): TFunc;
 
@@ -288,7 +356,6 @@ export namespace Meteor {
     requestPermissions?: ReadonlyArray<string> | undefined;
     requestOfflineToken?: Boolean | undefined;
     forceApprovalPrompt?: Boolean | undefined;
-    loginUrlParameters?: Object | undefined;
     redirectUrl?: string | undefined;
     loginHint?: string | undefined;
     loginStyle?: string | undefined;
@@ -310,7 +377,15 @@ export namespace Meteor {
   ): void;
 
   function loginWithGoogle(
-    options?: Meteor.LoginWithExternalServiceOptions,
+    options?: Meteor.LoginWithExternalServiceOptions & {
+      /** Google login accepts additional login parameters based on
+       * https://developers.google.com/identity/openid-connect/openid-connect#authenticationuriparameters.
+       * However, there's only one parameter that must be set directly; all
+       * others can be set using Meteor's standard OAuth login parameters */
+      loginUrlParameters?: {
+        include_granted_scopes: boolean;
+      },
+    },
     callback?: (error?: global_Error | Meteor.Error | Meteor.TypedError) => void
   ): void;
 
@@ -329,20 +404,8 @@ export namespace Meteor {
     callback?: (error?: global_Error | Meteor.Error | Meteor.TypedError) => void
   ): void;
 
-  function loginWith<ExternalService>(
-    options?: {
-      requestPermissions?: ReadonlyArray<string> | undefined;
-      requestOfflineToken?: boolean | undefined;
-      loginUrlParameters?: Object | undefined;
-      userEmail?: string | undefined;
-      loginStyle?: string | undefined;
-      redirectUrl?: string | undefined;
-    },
-    callback?: (error?: global_Error | Meteor.Error | Meteor.TypedError) => void
-  ): void;
-
   function loginWithPassword(
-    user: Object | string,
+    user: { username: string } | { email: string } | { id: string } | string,
     password: string,
     callback?: (error?: global_Error | Meteor.Error | Meteor.TypedError) => void
   ): void;
@@ -365,26 +428,6 @@ export namespace Meteor {
   ): void;
   /** Login **/
 
-  /** Event **/
-  interface Event {
-    type: string;
-    target: HTMLElement;
-    currentTarget: HTMLElement;
-    which: number;
-    stopPropagation(): void;
-    stopImmediatePropagation(): void;
-    preventDefault(): void;
-    isPropagationStopped(): boolean;
-    isImmediatePropagationStopped(): boolean;
-    isDefaultPrevented(): boolean;
-  }
-  interface EventHandlerFunction extends Function {
-    (event?: Meteor.Event, templateInstance?: Blaze.TemplateInstance): void;
-  }
-  interface EventMap {
-    [id: string]: Meteor.EventHandlerFunction;
-  }
-  /** Event **/
 
   /** Connection **/
   function reconnect(): void;
@@ -420,7 +463,7 @@ export namespace Meteor {
     close: () => void;
     onClose: (callback: () => void) => void;
     clientAddress: string;
-    httpHeaders: Object;
+    httpHeaders: Record<string, string>;
   }
 
   function onConnection(callback: (connection: Connection) => void): void;
@@ -434,7 +477,14 @@ export namespace Meteor {
    */
   function publish(
     name: string | null,
-    func: (this: Subscription, ...args: any[]) => void,
+    func: (
+      this: Subscription,
+      ...args: any[]
+    ) =>
+      | void
+      | Mongo.Cursor<any>
+      | Mongo.Cursor<any>[]
+      | Promise<void | Mongo.Cursor<any> | Mongo.Cursor<any>[]>,
     options?: { is_auto: boolean }
   ): void;
 
@@ -448,7 +498,7 @@ export interface Subscription {
    * @param id The new document's ID.
    * @param fields The fields in the new document.  If `_id` is present it is ignored.
    */
-  added(collection: string, id: string, fields: Object): void;
+  added(collection: string, id: string, fields: Record<string, unknown>): void;
   /**
    * Call inside the publish function. Informs the subscriber that a document in the record set has been modified.
    * @param collection The name of the collection that contains the changed document.
@@ -456,7 +506,7 @@ export interface Subscription {
    * @param fields The fields in the document that have changed, together with their new values.  If a field is not present in `fields` it was left unchanged; if it is present in `fields` and
    * has a value of `undefined` it was removed from the document.  If `_id` is present it is ignored.
    */
-  changed(collection: string, id: string, fields: Object): void;
+  changed(collection: string, id: string, fields: Record<string, unknown>): void;
   /** Access inside the publish function. The incoming connection for this subscription. */
   connection: Meteor.Connection;
   /**
@@ -498,7 +548,10 @@ export namespace Meteor {
   /** Global props **/
   /** True if running in development environment. */
   var isDevelopment: boolean;
+  var isModern: boolean;
+  var gitCommitHash: string | undefined;
   var isTest: boolean;
   var isAppTest: boolean;
+  var isPackageTest: boolean;
   /** Global props **/
 }
