@@ -40,6 +40,10 @@ Similar to `skel`, `skel-chakra-ui` is copied on `meteor create --chakra-ui` com
 
 Similar to `skel`, `skel-solid` is copied on `meteor create --solid` command.
 
+## skel-vue - Package Skeleton
+
+Similar to `skel`, `skel-vue` is copied on `meteor create --vue` command.
+
 ## server - Bundled App's Bootstrap
 
 The `server` folder is copied by Isobuild when the app is bundled (on
